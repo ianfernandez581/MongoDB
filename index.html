@@ -93,17 +93,18 @@
   .card-med .chart-wrap{height:220px}
   .chart-wrap{position:relative;flex:1;min-height:160px}
 
-  /* --- KPI tiles --- */
+  /* --- Paid-media KPI tiles (now white cards, secondary visual weight) --- */
   .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:0}
-  .kpi{background:linear-gradient(135deg,var(--mdb-slate) 0%,#03293A 100%);
-       color:#fff;border-radius:12px;padding:16px 18px;box-shadow:var(--shadow-card);
-       position:relative;overflow:hidden}
+  .kpi{background:var(--mdb-card);border:1px solid var(--mdb-line);
+       color:var(--mdb-ink);border-radius:12px;padding:16px 18px;
+       box-shadow:var(--shadow-card);position:relative;overflow:hidden}
   .kpi::before{content:"";position:absolute;right:-30px;top:-30px;width:120px;height:120px;
-               background:radial-gradient(circle,rgba(0,237,100,.18) 0%,transparent 70%)}
+               background:radial-gradient(circle,rgba(0,104,74,.06) 0%,transparent 70%)}
   .kpi .k{font-size:10.5px;letter-spacing:.8px;text-transform:uppercase;
-          color:rgba(255,255,255,.72);font-weight:600;position:relative}
-  .kpi .v{font-size:26px;font-weight:700;margin-top:6px;letter-spacing:-.5px;position:relative}
-  .kpi .sub{font-size:11.5px;color:rgba(255,255,255,.65);margin-top:4px;position:relative}
+          color:var(--mdb-mute);font-weight:600;position:relative}
+  .kpi .v{font-size:26px;font-weight:700;margin-top:6px;letter-spacing:-.5px;
+          position:relative;color:var(--mdb-slate)}
+  .kpi .sub{font-size:11.5px;color:var(--mdb-mute);margin-top:4px;position:relative}
 
   .alert,.info{border-radius:10px;padding:14px 16px;margin:14px 0;display:flex;gap:12px;
                align-items:flex-start;font-size:13px;line-height:1.55}
@@ -146,22 +147,32 @@
                       margin-top:10px;font-size:11.5px;color:var(--mdb-mute)}
   .prog-card .markets span b{color:var(--mdb-ink);font-weight:600;float:right}
 
-  /* CS top KPI strip — matches Cloudflare CS pattern */
-  .cs-kpi-strip{display:grid;grid-template-columns:repeat(4,1fr);gap:4px}
-  .cs-kpi{padding:6px 18px;border-right:1px solid var(--mdb-line)}
+  /* CS top KPI strip — slate-blue hero panel (main visual focus of the dashboard) */
+  .cs-hero{background:linear-gradient(135deg,var(--mdb-slate) 0%,#03293A 100%);
+           color:#fff;border-radius:14px;padding:22px 8px;
+           box-shadow:0 4px 22px rgba(0,30,43,.18);
+           position:relative;overflow:hidden;border:none;margin-top:14px}
+  .cs-hero::before{content:"";position:absolute;right:-60px;top:-60px;width:240px;height:240px;
+                   background:radial-gradient(circle,rgba(0,237,100,.22) 0%,transparent 70%);
+                   pointer-events:none}
+  .cs-hero::after{content:"";position:absolute;left:-80px;bottom:-80px;width:200px;height:200px;
+                  background:radial-gradient(circle,rgba(0,104,74,.18) 0%,transparent 70%);
+                  pointer-events:none}
+  .cs-kpi-strip{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;position:relative}
+  .cs-kpi{padding:8px 22px;border-right:1px solid rgba(255,255,255,.12)}
   .cs-kpi:last-child{border-right:none}
-  .cs-kpi .label{font-size:10px;font-weight:700;letter-spacing:.8px;
-                 text-transform:uppercase;color:var(--mdb-mute);margin-bottom:4px}
+  .cs-kpi .label{font-size:10.5px;font-weight:700;letter-spacing:.8px;
+                 text-transform:uppercase;color:rgba(255,255,255,.85);margin-bottom:4px}
   .cs-kpi .group{font-size:9.5px;font-weight:600;letter-spacing:.6px;
-                 text-transform:uppercase;color:var(--mdb-mute);margin-bottom:2px}
-  .cs-kpi .v{font-size:28px;font-weight:700;color:var(--mdb-slate);
+                 text-transform:uppercase;color:rgba(255,255,255,.55);margin-bottom:2px}
+  .cs-kpi .v{font-size:30px;font-weight:700;color:#fff;
              letter-spacing:-.5px;line-height:1.1}
-  .cs-kpi .v.ok{color:var(--good-green)}
-  .cs-kpi .v.warn{color:var(--warn-amber)}
-  .cs-kpi .sub{font-size:11px;color:var(--mdb-mute);margin-top:3px;font-style:italic}
+  .cs-kpi .v.ok{color:var(--mdb-spring)}
+  .cs-kpi .v.warn{color:#FFC766}
+  .cs-kpi .sub{font-size:11px;color:rgba(255,255,255,.65);margin-top:3px;font-style:italic}
   @media (max-width:760px){
     .cs-kpi-strip{grid-template-columns:repeat(2,1fr)}
-    .cs-kpi{border-right:none;border-bottom:1px solid var(--mdb-line);padding:10px}
+    .cs-kpi{border-right:none;border-bottom:1px solid rgba(255,255,255,.12);padding:10px 14px}
   }
 
   .loading{padding:80px 20px;text-align:center;color:var(--mdb-mute)}
@@ -237,19 +248,70 @@
       <button class="chip-action" onclick="clearCampaigns()">Clear</button>
     </div>
 
-    <!-- TTD pixel caveat -->
-    <div class="alert">
-      <div class="ico">⚠</div>
-      <div>
-        <h3>Measurement caveat — TTD has no lead-level conversion tracking</h3>
-        <p>The Trade Desk reports zero <b>leads</b> in the paid-media feed because
-          per-event image pixels haven't been deployed on the lead-form thank-you
-          page. The universal pixel only counts site visits. Lead delivery is
-          tracked separately via Salesforce (see Content Syndication below).</p>
+
+    <!-- ============ CONTENT SYNDICATION ============ -->
+    <div class="section first">
+      <h2>Content Syndication — Lead Pacing</h2>
+      <span class="sub">Live Salesforce data across three DNB IDE programmes
+        (Single Touch · Tech DMs · Biz &amp; Ops Leaders)</span>
+    </div>
+
+    <!-- Top KPI strip — slate-blue hero, main visual focus -->
+    <div class="cs-hero">
+      <div id="csKpiStrip" class="cs-kpi-strip"></div>
+    </div>
+
+    <!-- Three cards row: Leads vs target / Progress / Weekly pacing -->
+    <div class="grid" style="margin-top:14px">
+      <div class="card card-med">
+        <h3>Leads vs target</h3>
+        <div class="hint">Total target, time-to-date target, and leads delivered.</div>
+        <div id="leadsVsTarget"></div>
+      </div>
+      <div class="card card-med">
+        <h3>Progress</h3>
+        <div class="hint">Leads vs target / Time vs campaign days elapsed.</div>
+        <div id="leadsProgress"></div>
       </div>
     </div>
 
-    <div class="section first">
+    <div class="card" style="margin-top:14px">
+      <h3>Weekly pacing — target vs actual</h3>
+      <div class="hint">Leads delivered per week-of, against the weekly target pace.</div>
+      <div class="chart-wrap" style="height:300px"><canvas id="weeklyPacing"></canvas></div>
+    </div>
+
+    <div class="section" style="border-top:none;padding-top:14px;margin-top:14px">
+      <h2 style="font-size:15px">Lead breakdown by programme</h2>
+      <span class="sub">Volume by programme and market</span>
+    </div>
+    <div class="grid">
+      <div class="card card-med">
+        <h3>Total leads by market</h3>
+        <div class="hint">All statuses combined.</div>
+        <div class="chart-wrap"><canvas id="csMarketChart"></canvas></div>
+      </div>
+      <div class="card card-med">
+        <h3>Leads by programme</h3>
+        <div class="hint">Single Touch dominates volume; Tech DMs and Biz Ops lag.</div>
+        <div class="chart-wrap"><canvas id="csProgChart"></canvas></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <h3>Programme × market breakdown</h3>
+      <div class="hint">Total leads, latest lead day per cell.</div>
+      <div style="overflow:auto">
+        <table id="csTable">
+          <thead><tr>
+            <th>Programme</th><th>Market</th>
+            <th>Leads</th><th>Last lead</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="section">
       <h2>Paid Media — Headline</h2>
       <span class="sub">Live Trade Desk delivery across selected campaigns</span>
     </div>
@@ -315,68 +377,6 @@
       </table>
     </div>
 
-    <!-- ============ CONTENT SYNDICATION ============ -->
-    <div class="section">
-      <h2>Content Syndication — Lead Pacing</h2>
-      <span class="sub">Live Salesforce data across three DNB IDE programmes
-        (Single Touch · Tech DMs · Biz &amp; Ops Leaders)</span>
-    </div>
-
-    <!-- Top KPI strip (matches Cloudflare CS pattern) -->
-    <div class="card" style="margin-top:14px">
-      <div id="csKpiStrip" class="cs-kpi-strip"></div>
-    </div>
-
-    <!-- Three cards row: Leads vs target / Progress / Weekly pacing -->
-    <div class="grid" style="margin-top:14px">
-      <div class="card card-med">
-        <h3>Leads vs target</h3>
-        <div class="hint">Total target, time-to-date target, and leads delivered.</div>
-        <div id="leadsVsTarget"></div>
-      </div>
-      <div class="card card-med">
-        <h3>Progress</h3>
-        <div class="hint">Leads vs target / Time vs campaign days elapsed.</div>
-        <div id="leadsProgress"></div>
-      </div>
-    </div>
-
-    <div class="card" style="margin-top:14px">
-      <h3>Weekly pacing — target vs actual</h3>
-      <div class="hint">Leads delivered per week-of, against the weekly target pace.</div>
-      <div class="chart-wrap" style="height:300px"><canvas id="weeklyPacing"></canvas></div>
-    </div>
-
-    <div class="section" style="border-top:none;padding-top:14px;margin-top:14px">
-      <h2 style="font-size:15px">Lead breakdown by programme</h2>
-      <span class="sub">Volume by programme and market</span>
-    </div>
-    <div class="grid">
-      <div class="card card-med">
-        <h3>Total leads by market</h3>
-        <div class="hint">All statuses combined.</div>
-        <div class="chart-wrap"><canvas id="csMarketChart"></canvas></div>
-      </div>
-      <div class="card card-med">
-        <h3>Leads by programme</h3>
-        <div class="hint">Single Touch dominates volume; Tech DMs and Biz Ops lag.</div>
-        <div class="chart-wrap"><canvas id="csProgChart"></canvas></div>
-      </div>
-    </div>
-
-    <div class="card" style="margin-top:14px">
-      <h3>Programme × market breakdown</h3>
-      <div class="hint">Total leads, latest lead day per cell.</div>
-      <div style="overflow:auto">
-        <table id="csTable">
-          <thead><tr>
-            <th>Programme</th><th>Market</th>
-            <th>Leads</th><th>Last lead</th>
-          </tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </div>
 
     <footer id="footMeta"></footer>
 
