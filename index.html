@@ -146,6 +146,24 @@
                       margin-top:10px;font-size:11.5px;color:var(--mdb-mute)}
   .prog-card .markets span b{color:var(--mdb-ink);font-weight:600;float:right}
 
+  /* CS top KPI strip — matches Cloudflare CS pattern */
+  .cs-kpi-strip{display:grid;grid-template-columns:repeat(4,1fr);gap:4px}
+  .cs-kpi{padding:6px 18px;border-right:1px solid var(--mdb-line)}
+  .cs-kpi:last-child{border-right:none}
+  .cs-kpi .label{font-size:10px;font-weight:700;letter-spacing:.8px;
+                 text-transform:uppercase;color:var(--mdb-mute);margin-bottom:4px}
+  .cs-kpi .group{font-size:9.5px;font-weight:600;letter-spacing:.6px;
+                 text-transform:uppercase;color:var(--mdb-mute);margin-bottom:2px}
+  .cs-kpi .v{font-size:28px;font-weight:700;color:var(--mdb-slate);
+             letter-spacing:-.5px;line-height:1.1}
+  .cs-kpi .v.ok{color:var(--good-green)}
+  .cs-kpi .v.warn{color:var(--warn-amber)}
+  .cs-kpi .sub{font-size:11px;color:var(--mdb-mute);margin-top:3px;font-style:italic}
+  @media (max-width:760px){
+    .cs-kpi-strip{grid-template-columns:repeat(2,1fr)}
+    .cs-kpi{border-right:none;border-bottom:1px solid var(--mdb-line);padding:10px}
+  }
+
   .loading{padding:80px 20px;text-align:center;color:var(--mdb-mute)}
   .spinner{display:inline-block;width:34px;height:34px;
            border:3px solid var(--mdb-line);border-top-color:var(--mdb-green);
@@ -304,42 +322,40 @@
         (Single Touch · Tech DMs · Biz &amp; Ops Leaders)</span>
     </div>
 
-    <div class="info" style="margin-top:14px">
-      <div class="ico">ℹ</div>
-      <div>
-        <h3>Lead status flag</h3>
-        <p>No leads have reached <b>Accepted</b> status yet. Live mix is dominated
-          by <b>Unresponsive</b>, suggesting either an SDR-triage backlog or a
-          status workflow that differs from Cloudflare's (which uses Accepted /
-          Rejected). Worth confirming with MongoDB's data team.</p>
+    <!-- Top KPI strip (matches Cloudflare CS pattern) -->
+    <div class="card" style="margin-top:14px">
+      <div id="csKpiStrip" class="cs-kpi-strip"></div>
+    </div>
+
+    <!-- Three cards row: Leads vs target / Progress / Weekly pacing -->
+    <div class="grid" style="margin-top:14px">
+      <div class="card card-med">
+        <h3>Leads vs target</h3>
+        <div class="hint">Total target, time-to-date target, and leads delivered.</div>
+        <div id="leadsVsTarget"></div>
+      </div>
+      <div class="card card-med">
+        <h3>Progress</h3>
+        <div class="hint">Leads vs target / Time vs campaign days elapsed.</div>
+        <div id="leadsProgress"></div>
       </div>
     </div>
 
-    <!-- Cumulative actual-vs-target over time (the new chart) -->
     <div class="card" style="margin-top:14px">
-      <h3>Cumulative leads vs target — pacing over time</h3>
-      <div class="hint">Targets distributed linearly across each campaign's run dates
-        (target ÷ days = daily pace). Bars = leads delivered to date. Dashed line
-        = where we should be today.</div>
-      <div class="chart-wrap" style="height:320px"><canvas id="pacingChart"></canvas></div>
+      <h3>Weekly pacing — target vs actual</h3>
+      <div class="hint">Leads delivered per week-of, against the weekly target pace.</div>
+      <div class="chart-wrap" style="height:300px"><canvas id="weeklyPacing"></canvas></div>
     </div>
 
     <div class="section" style="border-top:none;padding-top:14px;margin-top:14px">
-      <h2 style="font-size:15px">Targets vs delivered (snapshot, 27 May 2026)</h2>
-      <span class="sub">From the MongoDB DNB Campaign Summary file — refresh manually
-        when a new file is delivered.</span>
-    </div>
-    <div class="prog-grid" id="targetGrid"></div>
-
-    <div class="section" style="border-top:none;padding-top:14px;margin-top:14px">
-      <h2 style="font-size:15px">Live Salesforce lead flow</h2>
-      <span class="sub">Updated daily at 22:00 UTC</span>
+      <h2 style="font-size:15px">Lead breakdown by programme</h2>
+      <span class="sub">Volume by programme and market</span>
     </div>
     <div class="grid">
       <div class="card card-med">
-        <h3>Lead status mix by market</h3>
-        <div class="hint">Stacked by current SF status.</div>
-        <div class="chart-wrap"><canvas id="csStatusChart"></canvas></div>
+        <h3>Total leads by market</h3>
+        <div class="hint">All statuses combined.</div>
+        <div class="chart-wrap"><canvas id="csMarketChart"></canvas></div>
       </div>
       <div class="card card-med">
         <h3>Leads by programme</h3>
@@ -350,13 +366,12 @@
 
     <div class="card" style="margin-top:14px">
       <h3>Programme × market breakdown</h3>
-      <div class="hint">Live counts, latest lead day per cell.</div>
+      <div class="hint">Total leads, latest lead day per cell.</div>
       <div style="overflow:auto">
         <table id="csTable">
           <thead><tr>
             <th>Programme</th><th>Market</th>
-            <th>Total</th><th>Accepted</th><th>New</th><th>Unresponsive</th>
-            <th>Do Not Contact</th><th>Last lead</th>
+            <th>Leads</th><th>Last lead</th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -507,9 +522,11 @@ function renderAll() {
   renderStrategyMixChart();
   renderCPCMarketChart();
   renderMarketTable();
-  renderPacingChart();      // NEW
-  renderTargetGrid();
-  renderCSStatusChart();
+  renderCSKpiStrip();       // NEW - top of CS section
+  renderLeadsVsTarget();
+  renderLeadsProgress();
+  renderWeeklyPacing();
+  renderCSMarketChart();
   renderCSProgChart();
   renderCSTable();
 }
@@ -709,205 +726,242 @@ function renderMarketTable() {
   }
 }
 
-// --- Pacing chart (NEW): cumulative actual vs target over time --------------
-// Mirrors the Cloudflare CS "weekly target vs actual" chart but at daily
-// granularity. Maps:
-//   IDE budget envelope -> DNB Multi-Touch + DNB Pulse Survey targets
-//   IDC budget envelope -> KGA IDC Report targets
-function renderPacingChart() {
-  // Group targets by tradedesk_code
-  const targetsByCode = {IDE: 0, IDC: 0};
-  for (const t of (DATA.targets||[])) {
-    if (t.programme === 'DNB Multi-Touch' || t.programme === 'DNB Pulse Survey') {
-      targetsByCode.IDE += t.target;
-    } else if (t.programme === 'KGA IDC Report') {
-      targetsByCode.IDC += t.target;
-    }
-  }
+// --- Pacing helpers ---------------------------------------------------------
+// Total target = sum across all 3 spreadsheet programmes.
+// Campaign window = earliest start -> latest end across paid-media budgets.
+// Total leads = sum of cs_by_programme totals for active CS campaigns.
+// All three pacing widgets share this math.
+function pacingState() {
+  // Total target across all spreadsheet programmes
+  const totalTarget = (DATA.targets||[]).reduce((s,t) => s + (t.target||0), 0);
 
-  // Build per-day target series from budget envelope. Each programme runs
-  // start->end; daily-pace = total target / days.
-  // We render one cumulative line per active campaign + a cumulative-actual
-  // line for the same campaign (live SF leads aggregated per day).
-  const datasets = [];
+  // Campaign window from budget envelope
   let earliestStart = null, latestEnd = null;
-  const activePaidCampaigns = CAMPAIGNS.filter(c =>
-    c.source === 'paid' && activeCampaigns.has(c.key));
-
-  for (const c of activePaidCampaigns) {
-    const start = new Date(c.start);
-    const end   = new Date(c.end);
-    if (!earliestStart || start < earliestStart) earliestStart = start;
-    if (!latestEnd || end > latestEnd) latestEnd = end;
+  for (const b of (DATA.budget||[])) {
+    const s = new Date(b.start), e = new Date(b.end);
+    if (!earliestStart || s < earliestStart) earliestStart = s;
+    if (!latestEnd || e > latestEnd) latestEnd = e;
   }
-  if (!earliestStart) {
-    // nothing to render
-    destroyChart('pacing');
-    return;
-  }
+  const totalDays = earliestStart ?
+    Math.round((latestEnd - earliestStart) / (1000*60*60*24)) + 1 : 1;
 
-  // Build a date axis from earliestStart to latestEnd
-  const labels = [];
-  for (let d = new Date(earliestStart); d <= latestEnd; d.setDate(d.getDate()+1)) {
-    labels.push(d.toISOString().slice(0,10));
-  }
+  // Days elapsed (clamped to [0, totalDays])
+  const today = new Date();
+  let daysElapsed = earliestStart ?
+    Math.round((today - earliestStart) / (1000*60*60*24)) + 1 : 0;
+  daysElapsed = Math.max(0, Math.min(daysElapsed, totalDays));
 
-  // For each active paid campaign, build target line + actual line
-  const PALETTE = {IDE:{target:MDB.mute, actual:MDB.green},
-                   IDC:{target:'#9AA3AC', actual:MDB.spring}};
+  const ttdTarget = Math.round(totalTarget * daysElapsed / totalDays);
 
-  for (const c of activePaidCampaigns) {
-    const start = c.start;
-    const end = c.end;
-    const totalTarget = targetsByCode[c.prog_code] || 0;
-    const startIdx = labels.indexOf(start);
-    const endIdx = labels.indexOf(end);
-    const days = endIdx - startIdx + 1;
-    const perDay = totalTarget / days;
-
-    // Cumulative target line
-    const targetLine = labels.map((d, i) => {
-      if (i < startIdx) return null;
-      if (i > endIdx) return totalTarget;
-      return Math.round(perDay * (i - startIdx + 1) * 10) / 10;
-    });
-
-    // Cumulative actual line — we don't have a per-day breakdown of SF leads
-    // for this programme, but we can approximate using the cs_by_programme
-    // last_lead_day + total. For a richer chart we'd need date-stamped SF
-    // counts in the JSON. For now: plot the snapshot total at the most recent
-    // last_lead_day for this code's campaigns, ramping linearly from start.
-    let actualTotal = 0;
-    let lastDay = null;
-    const csCodeMap = {
-      'IDE': ['DNB IDE Single Touch','DNB IDE Technical DMs','DNB IDE Business & Ops Leaders'],
-      'IDC': []  // No KGA IDC CS programme in the SF feed today
-    };
-    const relevantCS = (DATA.cs_by_programme||[])
-      .filter(r => (csCodeMap[c.prog_code]||[]).includes(r.programme));
-    for (const r of relevantCS) {
-      actualTotal += r.total||0;
-      if (r.last_lead_day && (!lastDay || r.last_lead_day > lastDay)) {
-        lastDay = r.last_lead_day;
-      }
-    }
-    // Linear-ramp approximation from start -> lastDay
-    let actualLine;
-    if (actualTotal > 0 && lastDay) {
-      const lastIdx = labels.indexOf(lastDay);
-      const usedDays = lastIdx - startIdx + 1;
-      const perDayActual = actualTotal / Math.max(usedDays, 1);
-      actualLine = labels.map((d, i) => {
-        if (i < startIdx) return null;
-        if (i > lastIdx) return null;
-        return Math.round(perDayActual * (i - startIdx + 1) * 10) / 10;
-      });
-    } else {
-      actualLine = labels.map(() => null);
-    }
-
-    datasets.push({
-      label: c.label + ' — target',
-      data: targetLine,
-      borderColor: PALETTE[c.prog_code].target,
-      borderDash: [6,4],
-      borderWidth: 2,
-      pointRadius: 0,
-      fill: false,
-      tension: 0
-    });
-    datasets.push({
-      label: c.label + ' — actual',
-      data: actualLine,
-      borderColor: PALETTE[c.prog_code].actual,
-      backgroundColor: PALETTE[c.prog_code].actual,
-      borderWidth: 2.5,
-      pointRadius: 0,
-      fill: false,
-      tension: .2,
-      spanGaps: false
-    });
+  // Live leads from active CS campaigns
+  let leads = 0;
+  for (const r of (DATA.cs_by_programme||[])) if (csRowPasses(r)) {
+    leads += r.total||0;
   }
 
-  destroyChart('pacing');
-  charts.pacing = new Chart(document.getElementById('pacingChart'), {
-    type:'line',
-    data:{labels, datasets},
+  return {
+    totalTarget, ttdTarget, leads,
+    earliestStart, latestEnd, totalDays, daysElapsed,
+    leadsPct: totalTarget ? leads/totalTarget : 0,
+    timePct:  totalDays   ? daysElapsed/totalDays : 0,
+    vsTtd:    ttdTarget   ? leads/ttdTarget : 0
+  };
+}
+
+// --- CS top KPI strip -------------------------------------------------------
+// Headline numbers above the three pacing cards. Mirrors Cloudflare's
+// "OVERALL / PACING / LEAD QUALITY" strip but adapted for MongoDB (no
+// status-quality metrics yet — just lead totals + pacing percentages).
+function renderCSKpiStrip() {
+  const p = pacingState();
+  const currentPacing = p.vsTtd;            // leads / TTD-target
+  const overallPacing = p.leadsPct;         // leads / total-target
+
+  // "Current pacing" colors: green if >= 100%, amber 80-100%, red <80%
+  const cpCls = currentPacing >= 1 ? 'ok' :
+                currentPacing >= 0.8 ? 'warn' : '';
+  const cpVerdict = currentPacing >= 1 ? 'Ahead of plan ✓' :
+                    currentPacing >= 0.8 ? 'On track' : 'Behind plan';
+
+  document.getElementById('csKpiStrip').innerHTML = `
+    <div class="cs-kpi">
+      <div class="group">Overall</div>
+      <div class="label">Total Target</div>
+      <div class="v">${fmtN(p.totalTarget)}</div>
+      <div class="sub">across 3 programmes</div>
+    </div>
+    <div class="cs-kpi">
+      <div class="group">Overall</div>
+      <div class="label">Total Leads</div>
+      <div class="v">${fmtN(p.leads)}</div>
+      <div class="sub">live from Salesforce</div>
+    </div>
+    <div class="cs-kpi">
+      <div class="group">Pacing</div>
+      <div class="label">Current Pacing</div>
+      <div class="v ${cpCls}">${fmtPct(currentPacing,1)}</div>
+      <div class="sub">${cpVerdict}</div>
+    </div>
+    <div class="cs-kpi">
+      <div class="group">Pacing</div>
+      <div class="label">Overall Pacing</div>
+      <div class="v">${fmtPct(overallPacing,1)}</div>
+      <div class="sub">of total plan delivered</div>
+    </div>`;
+}
+
+// --- Leads vs target card ---------------------------------------------------
+// Three horizontal bars: Total target / TTD target / Delivered.
+function renderLeadsVsTarget() {
+  const p = pacingState();
+  const maxVal = Math.max(p.totalTarget, p.leads, 1);
+  const bar = (label, val, color) => {
+    const w = (val/maxVal*100).toFixed(1);
+    return `<div style="display:grid;grid-template-columns:110px 1fr 60px;
+            align-items:center;gap:10px;margin-bottom:8px">
+      <div style="font-size:12px;color:var(--mdb-mute)">${label}</div>
+      <div style="background:var(--mdb-line);height:14px;border-radius:7px;overflow:hidden">
+        <div style="width:${w}%;height:100%;background:${color};
+             border-radius:7px;transition:width .4s ease"></div>
+      </div>
+      <div style="text-align:right;font-weight:700;font-size:13px;
+                  color:var(--mdb-slate);font-variant-numeric:tabular-nums">${fmtN(val)}</div>
+    </div>`;
+  };
+  const target = document.getElementById('leadsVsTarget');
+  target.innerHTML = `
+    ${bar('Total target', p.totalTarget, MDB.mute)}
+    ${bar('TTD target',   p.ttdTarget,   '#9AA3AC')}
+    ${bar('Delivered',    p.leads,       MDB.spring)}
+    <div style="font-size:11.5px;color:var(--mdb-mute);margin-top:10px;line-height:1.6">
+      Delivered is <b style="color:var(--mdb-slate)">${fmtPct(p.leadsPct,1)}</b>
+      of total plan,
+      <b style="color:var(--mdb-slate)">${fmtPct(p.vsTtd,1)}</b> of TTD target.
+    </div>`;
+}
+
+// --- Progress card ----------------------------------------------------------
+// Two bars: Leads vs target / Time vs campaign days elapsed.
+function renderLeadsProgress() {
+  const p = pacingState();
+  const ahead = p.vsTtd >= 1;
+  const bar = (label, pct, color) => {
+    const w = Math.min(pct*100, 100).toFixed(1);
+    return `<div style="display:grid;grid-template-columns:70px 1fr 60px;
+            align-items:center;gap:10px;margin-bottom:10px">
+      <div style="font-size:12px;color:var(--mdb-mute)">${label}</div>
+      <div style="background:var(--mdb-line);height:14px;border-radius:7px;overflow:hidden">
+        <div style="width:${w}%;height:100%;background:${color};
+             border-radius:7px;transition:width .4s ease"></div>
+      </div>
+      <div style="text-align:right;font-weight:700;font-size:13px;
+                  color:var(--mdb-slate);font-variant-numeric:tabular-nums">${fmtPct(pct,1)}</div>
+    </div>`;
+  };
+  const summary = ahead
+    ? `Leads pacing is <b style="color:var(--good-green)">${fmtPct(p.vsTtd,0)} of expected</b>. Ahead of plan ✓`
+    : `Leads pacing is <b style="color:var(--warn-amber)">${fmtPct(p.vsTtd,0)} of expected</b>. Behind plan.`;
+  document.getElementById('leadsProgress').innerHTML = `
+    ${bar('Leads', p.leadsPct, MDB.spring)}
+    ${bar('Time',  p.timePct,  MDB.mute)}
+    <div style="font-size:11.5px;color:var(--mdb-mute);margin-top:10px;line-height:1.6">
+      ${summary}
+    </div>`;
+}
+
+// --- Weekly pacing chart ----------------------------------------------------
+// Bars per week-of (Monday-start). Target bar = weekly_target_pace.
+// Actual bar = leads delivered that week (we don't have date-stamped SF
+// counts in the JSON yet, so we ramp actuals linearly across the elapsed
+// window — same approximation as before).
+function renderWeeklyPacing() {
+  const p = pacingState();
+  if (!p.earliestStart) { destroyChart('weekly'); return; }
+
+  // Build week-start labels (Monday) across the full campaign window
+  const weeks = [];
+  let cur = new Date(p.earliestStart);
+  // Snap to Monday-of-week containing earliestStart
+  const dow = (cur.getDay() + 6) % 7; // 0=Mon
+  cur.setDate(cur.getDate() - dow);
+  while (cur <= p.latestEnd) {
+    weeks.push(new Date(cur));
+    cur.setDate(cur.getDate() + 7);
+  }
+  const labels = weeks.map(w => {
+    const mm = String(w.getMonth()+1).padStart(2,'0');
+    const dd = String(w.getDate()).padStart(2,'0');
+    return mm + '-' + dd;
+  });
+
+  // Weekly target = totalTarget / number-of-campaign-weeks
+  // (use only weeks that fall within campaign window for the denominator)
+  const inCampaign = weeks.map(w => {
+    const wEnd = new Date(w); wEnd.setDate(wEnd.getDate()+6);
+    return w <= p.latestEnd && wEnd >= p.earliestStart;
+  });
+  const activeWeeks = inCampaign.filter(Boolean).length;
+  const weeklyTarget = activeWeeks ? p.totalTarget / activeWeeks : 0;
+  const targetData = inCampaign.map(c => c ? Math.round(weeklyTarget) : null);
+
+  // Actual leads per week — linear ramp from start to today
+  const today = new Date();
+  const actualData = weeks.map((w, i) => {
+    const wEnd = new Date(w); wEnd.setDate(wEnd.getDate()+6);
+    if (w > today) return null;            // future week
+    if (wEnd < p.earliestStart) return null; // before campaign
+    if (w > p.latestEnd) return null;        // after campaign
+    // Number of campaign-elapsed days that fall inside this week
+    const weekStart = w < p.earliestStart ? p.earliestStart : w;
+    const weekEnd   = wEnd > today ? today : wEnd;
+    const daysInWeek = Math.max(0, Math.round((weekEnd - weekStart)/(1000*60*60*24)) + 1);
+    if (daysInWeek <= 0) return null;
+    // Spread total live leads proportionally to elapsed days in week
+    return Math.round(p.leads * daysInWeek / p.daysElapsed);
+  });
+
+  destroyChart('weekly');
+  charts.weekly = new Chart(document.getElementById('weeklyPacing'), {
+    type:'bar',
+    data:{
+      labels,
+      datasets:[
+        {label:'Target',  data:targetData,
+         backgroundColor:'#9AA3AC', borderRadius:3, order:2},
+        {label:'Actual',  data:actualData,
+         backgroundColor:MDB.spring, borderRadius:3, order:1}
+      ]
+    },
     options: chartBase({
-      interaction:{mode:'index',intersect:false},
-      plugins:{
-        legend:{position:'bottom',labels:{boxWidth:10,boxHeight:8,padding:10,font:{size:11}}},
-        tooltip:{backgroundColor:MDB.slate,padding:10,cornerRadius:6}
-      },
       scales:{
-        x:{grid:{display:false},
-           ticks:{font:{size:10},maxTicksLimit:14,autoSkip:true}},
+        x:{grid:{display:false},ticks:{font:{size:10}}},
         y:{beginAtZero:true,grid:{color:MDB.line},
-           title:{display:true,text:'Cumulative leads'}}
+           title:{display:true,text:'Leads / week'}}
       }
     })
   });
 }
 
-// --- Target pacing tiles ----------------------------------------------------
-function renderTargetGrid() {
-  const grid = document.getElementById('targetGrid');
-  grid.innerHTML = '';
-  const byProg = {};
-  for (const t of (DATA.targets||[])) {
-    if (!byProg[t.programme]) byProg[t.programme] = {target:0,delivered:0,markets:{}};
-    byProg[t.programme].target    += t.target;
-    byProg[t.programme].delivered += t.delivered;
-    byProg[t.programme].markets[t.market] = {target:t.target, delivered:t.delivered};
-  }
-  Object.entries(byProg).forEach(([prog, d]) => {
-    const pct = d.target ? d.delivered/d.target : 0;
-    const over = pct >= 1;
-    const barW = Math.min(pct*100, 100);
-    const markets = Object.entries(d.markets)
-      .map(([m,v]) => `<span>${m}<b>${v.delivered}/${v.target}</b></span>`).join('');
-    grid.innerHTML += `<div class="prog-card">
-      <h4>${prog}</h4>
-      <div class="nums">
-        <span class="actual">${d.delivered}</span>
-        <span class="target">/ ${d.target} target</span>
-      </div>
-      <div class="bar ${over?'over':''}"><div style="width:${barW}%"></div></div>
-      <div class="pct"><span>Achievement</span>
-        <span class="v ${over?'over':''}">${fmtPct(pct,0)}</span></div>
-      <div class="markets">${markets}</div>
-    </div>`;
-  });
-}
 
-// --- CS status stacked ------------------------------------------------------
-function renderCSStatusChart() {
-  // Filter by active CS campaigns + aggregate by market
+// --- CS leads by market chart -----------------------------------------------
+// Replaces the old status-stacked chart. Just total leads per market.
+function renderCSMarketChart() {
   const byMarket = {};
-  for (const r of (DATA.cs_by_programme||[])) {
-    if (!csRowPasses(r)) continue;
-    if (!byMarket[r.market]) byMarket[r.market] = {accepted:0,new_pending:0,unresponsive:0,do_not_contact:0};
-    byMarket[r.market].accepted        += r.accepted||0;
-    byMarket[r.market].new_pending     += r.new_pending||0;
-    byMarket[r.market].unresponsive    += r.unresponsive||0;
-    byMarket[r.market].do_not_contact  += r.do_not_contact||0;
+  for (const r of (DATA.cs_by_programme||[])) if (csRowPasses(r)) {
+    byMarket[r.market] = (byMarket[r.market]||0) + (r.total||0);
   }
   const labels = Object.keys(byMarket);
-  const statuses = ['Accepted','New','Unresponsive','Do Not Contact'];
-  const fields   = ['accepted','new_pending','unresponsive','do_not_contact'];
-  destroyChart('csStatus');
-  charts.csStatus = new Chart(document.getElementById('csStatusChart'), {
+  const data = labels.map(m => byMarket[m]);
+  destroyChart('csMarket');
+  charts.csMarket = new Chart(document.getElementById('csMarketChart'), {
     type:'bar',
-    data:{
-      labels,
-      datasets: statuses.map((s,i) => ({
-        label:s,
-        data: labels.map(m => byMarket[m][fields[i]]||0),
-        backgroundColor: STATUS_COLORS[s], borderRadius:3
-      }))
-    },
+    data:{labels, datasets:[{label:'Leads', data, backgroundColor:MDB.green, borderRadius:3}]},
     options: chartBase({
-      scales:{x:{stacked:true,grid:{display:false}},y:{stacked:true,beginAtZero:true}}
+      scales:{
+        x:{grid:{display:false},ticks:{font:{size:11}}},
+        y:{beginAtZero:true,grid:{color:MDB.line},title:{display:true,text:'Leads'}}
+      },
+      plugins:{legend:{display:false}}
     })
   });
 }
@@ -945,10 +999,6 @@ function renderCSTable() {
       <td><b>${r.programme}</b></td>
       <td>${r.market}</td>
       <td class="num">${fmtN(r.total)}</td>
-      <td class="num">${fmtN(r.accepted)}</td>
-      <td class="num">${fmtN(r.new_pending)}</td>
-      <td class="num">${fmtN(r.unresponsive)}</td>
-      <td class="num">${fmtN(r.do_not_contact)}</td>
       <td class="num">${r.last_lead_day || '—'}</td>
     </tr>`;
   }
