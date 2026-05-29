@@ -1,0 +1,509 @@
+-- =============================================================================
+-- MONGODB DASHBOARD - ONE-SHOT BUILD (v2)
+-- =============================================================================
+-- Run this script as ACCOUNTADMIN (or any role with database-create privs).
+-- Builds the complete MongoDB paid-media + content-syndication dashboard
+-- pipeline. Mirrors the Cloudflare stack one-for-one.
+--
+-- OBJECTS CREATED:
+--   MONGODB_SANDBOX                                 (database)
+--   MONGODB_SANDBOX.PAID_MEDIA_REPORTING            (schema)
+--
+--     -- PAID MEDIA (TradeDesk) -----------------------------------------
+--     V_STG_TRADEDESK_MONGODB                       (filtered + parsed)
+--     V_MONGODB_BENCHMARKS_STRATEGY                 (CPM/CTR plan)
+--     V_MONGODB_BENCHMARKS_MARKET                   (geo budget split)
+--     V_MONGODB_BUDGET_PROGRAMME                    (budget envelope)
+--     V_MONGODB_FINAL_MODEL                         (unified paid-media model)
+--
+--     -- TARGETS (from xlsx snapshot, 27 May) ---------------------------
+--     V_MONGODB_TARGETS                             (programme x market)
+--     V_MONGODB_TARGETS_BY_PROGRAMME                (rollup for KPI tiles)
+--
+--     -- CS LEADS (Salesforce live, 3 IDE campaign IDs) -----------------
+--     V_STG_SALESFORCE_MONGODB                      (filtered + market-mapped)
+--     V_MONGODB_CS_LEADS                            (rollup with status counts)
+--     V_MONGODB_CS_LEADS_BY_PROGRAMME               (per-programme breakdown)
+--
+--     -- INFRASTRUCTURE -------------------------------------------------
+--     R2_DASHBOARD_STAGE                            (writes to cf-apac-dashboard)
+--     DAILY_MONGODB_EXPORT                          (task -> mongodb.json)
+--
+-- BUCKET SETUP:
+--   Reuses cf-apac-dashboard (Cloudflare's existing bucket). Writes to
+--   bucket-root as mongodb.json. No new Cloudflare R2 setup required.
+-- =============================================================================
+
+
+-- =============================================================================
+-- SECTION 0  -  DATABASE + SCHEMA + GRANTS
+-- =============================================================================
+-- Important ordering (this fixes the "INSUFFICIENT PRIVILEGES" error):
+--   1. As ACCOUNTADMIN: create the database AND grant ownership of it to
+--      APAC_IN_ROLE. (Source-table read grants also need ACCOUNTADMIN since
+--      it owns APAC_ALL_PLATFORM.)
+--   2. Switch role to APAC_IN_ROLE.
+--   3. As APAC_IN_ROLE: create the schema inside its own database.
+--
+-- This mirrors how CLOUDFLARE_SANDBOX is laid out - database AND schema both
+-- owned by APAC_IN_ROLE. If you create the schema first as ACCOUNTADMIN and
+-- transfer ownership later, ACCOUNTADMIN loses access mid-script.
+-- =============================================================================
+
+-- ---- Step 1: as ACCOUNTADMIN, create database + grant ownership + source reads
+USE ROLE ACCOUNTADMIN;
+
+CREATE DATABASE IF NOT EXISTS MONGODB_SANDBOX
+    COMMENT = 'MongoDB APAC dashboard pipeline. Mirrors CLOUDFLARE_SANDBOX shape.';
+
+GRANT OWNERSHIP ON DATABASE MONGODB_SANDBOX TO ROLE APAC_IN_ROLE COPY CURRENT GRANTS;
+
+GRANT USAGE  ON DATABASE APAC_ALL_PLATFORM                                 TO ROLE APAC_IN_ROLE;
+GRANT USAGE  ON SCHEMA   APAC_ALL_PLATFORM.PUBLIC                          TO ROLE APAC_IN_ROLE;
+GRANT SELECT ON TABLE    APAC_ALL_PLATFORM.PUBLIC."TradeDesk_APAC ALL"     TO ROLE APAC_IN_ROLE;
+GRANT SELECT ON TABLE    APAC_ALL_PLATFORM.PUBLIC."Salesforce_CS_APAC_ALL" TO ROLE APAC_IN_ROLE;
+
+-- ---- Step 2: switch role + warehouse + database/schema context
+USE ROLE      APAC_IN_ROLE;
+USE WAREHOUSE APAC_IN_WH;
+USE DATABASE  MONGODB_SANDBOX;
+
+-- ---- Step 3: as APAC_IN_ROLE (the database owner), create the schema
+CREATE SCHEMA IF NOT EXISTS PAID_MEDIA_REPORTING
+    COMMENT = 'Staging views, targets, benchmarks, unified model, CS leads, export task.';
+
+USE SCHEMA PAID_MEDIA_REPORTING;
+
+
+-- =============================================================================
+-- SECTION 1  -  TRADEDESK STAGING
+-- =============================================================================
+-- Filters APAC_ALL_PLATFORM TradeDesk feed to MongoDB and parses campaign
+-- name + ad-group into PROGRAMME / MARKET / STRATEGY / OBJECTIVE.
+--
+-- Naming convention (validated against live feed):
+--   MONGODB _ {YEAR-QUARTER} _ {PROGRAMME} _ {REGION} _ {OBJECTIVE} _ {MARKET}
+--     pos 3 = PROGRAMME  (IDE | IDC)
+--     pos 5 = OBJECTIVE  (DEMAND-GENERATION today)
+--     pos 6 = MARKET     (ANZ | ASEAN | INDIA | KR-HK-TW)
+--
+-- IMPRESSIONS/IMPRESSION coalesce: MongoDB only populates the singular
+-- column. Same fix Cloudflare needed after the May 10 Adverity change.
+-- =============================================================================
+CREATE OR REPLACE VIEW V_STG_TRADEDESK_MONGODB (
+    DAY, ADVERTISER_NAME, CAMPAIGN_NAME, AD_GROUP_NAME, CREATIVE_NAME,
+    CREATIVE_FORMAT, PUBLISHER, IMPRESSIONS, COSTS, CLICKS, CONVERSIONS,
+    PROGRAMME, MARKET, STRATEGY, OBJECTIVE
+) AS
+SELECT
+    DAY,
+    ADVERTISER_NAME,
+    CAMPAIGN_NAME,
+    AD_GROUP_NAME,
+    CREATIVE_NAME,
+    AD_TYPE                                  AS CREATIVE_FORMAT,
+    PARTNER_NAME                             AS PUBLISHER,
+    COALESCE(IMPRESSIONS, IMPRESSION)        AS IMPRESSIONS,
+    COSTS,
+    CLICKS,
+    TOTAL_CLICK_PLUS_VIEW_CONVERSIONS        AS CONVERSIONS,
+    SPLIT_PART(CAMPAIGN_NAME, '_', 3)        AS PROGRAMME,
+    SPLIT_PART(CAMPAIGN_NAME, '_', 6)        AS MARKET,
+    SPLIT_PART(AD_GROUP_NAME, '_', 7)        AS STRATEGY,
+    SPLIT_PART(CAMPAIGN_NAME, '_', 5)        AS OBJECTIVE
+FROM APAC_ALL_PLATFORM.PUBLIC."TradeDesk_APAC ALL"
+WHERE ADVERTISER_NAME = 'MongoDB';
+
+
+-- =============================================================================
+-- SECTION 2  -  TARGETS (xlsx snapshot, frozen 27 May)
+-- =============================================================================
+-- Hard-coded from MongoDB_DNB_Campaign_Summary_27th_May.xlsx.
+-- 'NPR' in source file = 'KR-HK-TW' in TradeDesk feed (client confirmed).
+--
+-- NOTE: these programmes (Multi-Touch / Pulse Survey / KGA IDC) are DIFFERENT
+-- from the three DNB IDE programmes that flow into Salesforce
+-- (Single Touch / Tech DMs / Biz Ops). Keep both layers in the dashboard:
+--   - targets here drive the "vs target" KPI tiles
+--   - SF leads (section 4) drive the live lead-delivery chart
+-- =============================================================================
+CREATE OR REPLACE VIEW V_MONGODB_TARGETS AS
+SELECT * FROM (VALUES
+    ('DNB Multi-Touch',  'ANZ',       46,  43),
+    ('DNB Multi-Touch',  'INDIA',     105, 79),
+    ('DNB Multi-Touch',  'KR-HK-TW',  70,  39),
+    ('DNB Multi-Touch',  'ASEAN',     86,  73),
+    ('DNB Pulse Survey', 'ANZ',       14,  18),
+    ('DNB Pulse Survey', 'INDIA',     27,  27),
+    ('DNB Pulse Survey', 'KR-HK-TW',  16,  9),
+    ('DNB Pulse Survey', 'ASEAN',     25,  29),
+    ('KGA IDC Report',   'ANZ',       90,  40),
+    ('KGA IDC Report',   'INDIA',     209, 52),
+    ('KGA IDC Report',   'KR-HK-TW',  139, 28),
+    ('KGA IDC Report',   'ASEAN',     171, 54)
+) AS t (PROGRAMME_LABEL, MARKET, TARGET_LEADS, DELIVERED_LEADS_SNAPSHOT);
+
+
+CREATE OR REPLACE VIEW V_MONGODB_TARGETS_BY_PROGRAMME AS
+SELECT
+    PROGRAMME_LABEL,
+    SUM(TARGET_LEADS)             AS TARGET_LEADS,
+    SUM(DELIVERED_LEADS_SNAPSHOT) AS DELIVERED_LEADS,
+    ROUND(SUM(DELIVERED_LEADS_SNAPSHOT) / NULLIF(SUM(TARGET_LEADS), 0), 4) AS ACHIEVEMENT_PCT
+FROM V_MONGODB_TARGETS
+GROUP BY PROGRAMME_LABEL;
+
+
+-- =============================================================================
+-- SECTION 3  -  BENCHMARKS + BUDGET ENVELOPE
+-- =============================================================================
+CREATE OR REPLACE VIEW V_MONGODB_BENCHMARKS_STRATEGY AS
+SELECT * FROM (VALUES
+    ('CONTEXTUAL',    18, 0.0007, 5, 0.2250),
+    ('KEYWORDS',      22, 0.0010, 6, 0.1875),
+    ('BEHAVIOURAL',   25, 0.0009, 5, 0.1500),
+    ('RETARGETING',   32, 0.0015, 8, 0.2500),
+    ('AUDIENCE-ABM',  30, 0.0012, 4, 0.1875)
+) AS b (STRATEGY, CPM, CTR, FREQUENCY_CAP, BUDGET_WEIGHT);
+
+
+CREATE OR REPLACE VIEW V_MONGODB_BENCHMARKS_MARKET AS
+SELECT * FROM (VALUES
+    ('ANZ',      0.15),
+    ('ASEAN',    0.28),
+    ('INDIA',    0.34),
+    ('KR-HK-TW', 0.23)
+) AS m (MARKET, BUDGET_WEIGHT);
+
+
+CREATE OR REPLACE VIEW V_MONGODB_BUDGET_PROGRAMME AS
+SELECT * FROM (VALUES
+    ('DNB Targeted IDE (NEXD)', 'IDE', 24000, 19920, '2026-04-01'::DATE, '2026-06-30'::DATE),
+    ('KGA IDC (NEXD+Bombora)',  'IDC', 37200, 30876, '2026-05-25'::DATE, '2026-07-31'::DATE)
+) AS p (PROGRAMME_LABEL, TRADEDESK_CODE, GROSS_BUDGET_USD, NET_BUDGET_USD, START_DATE, END_DATE);
+
+
+-- =============================================================================
+-- SECTION 4  -  SALESFORCE CS LEADS (live, 3 IDE campaign IDs)
+-- =============================================================================
+-- Filters APAC_ALL_PLATFORM Salesforce feed to MongoDB DNB IDE programmes
+-- and maps COUNTRY_NAME to MongoDB's 4-market bucket.
+--
+-- Three campaign IDs (client-provided):
+--   701RG00001DtQczYAF  =  DNB IDE Single Touch                (261 leads to date)
+--   701RG00001HcDIVYA3  =  DNB IDE Technical Decision Makers   (75 leads)
+--   701RG00001GvvrDYAR  =  DNB IDE Business & Ops Leaders      (18 leads)
+--
+-- Statuses observed today: New, Unresponsive, Do Not Contact. No "Accepted"
+-- yet, unlike Cloudflare. Worth flagging to client - may be a different
+-- lead-status workflow.
+-- =============================================================================
+CREATE OR REPLACE VIEW V_STG_SALESFORCE_MONGODB AS
+SELECT
+    DT_CREATED, DT_UPDATED, DT_FILENAME, DAY,
+    FIRST_NAME, LAST_NAME, EMAIL, COMPANY_NAME, JOB_TITLE, JOB_FUNCTION, JOB_LEVEL,
+    OPT_IN, ASSET_1, ASSET_2, CAMPAIGN, PHONE, INDUSTRY_NAME, WEBSITE,
+    STATE, REGION, COUNTRY_NAME, ANNUAL_REVENUE_, CAMPAIGN_ID, LEADS, LEAD_ID_SF,
+    STATUS, LEAD_STATUS,
+
+    -- Programme label for the breakdown chart
+    CASE CAMPAIGN_ID
+        WHEN '701RG00001DtQczYAF' THEN 'DNB IDE Single Touch'
+        WHEN '701RG00001HcDIVYA3' THEN 'DNB IDE Technical DMs'
+        WHEN '701RG00001GvvrDYAR' THEN 'DNB IDE Business & Ops Leaders'
+    END AS PROGRAMME_LABEL,
+
+    -- Map COUNTRY_NAME to MongoDB's 4-market bucket. Source data has
+    -- multiple casings/variants ("Korea", "South Korea", "KR") so the CASE
+    -- normalizes them all to the same bucket.
+    CASE
+        WHEN COUNTRY_NAME IN ('Australia', 'New Zealand')                       THEN 'ANZ'
+        WHEN COUNTRY_NAME IN ('India')                                          THEN 'INDIA'
+        WHEN COUNTRY_NAME IN ('Singapore', 'Malaysia', 'Indonesia',
+                              'Thailand',  'Philippines', 'Vietnam',
+                              'Viet Nam',  'Myanmar')                           THEN 'ASEAN'
+        WHEN COUNTRY_NAME IN ('Korea', 'South Korea', 'Korea, Republic of',
+                              'KR',
+                              'Hong Kong', 'Taiwan')                            THEN 'KR-HK-TW'
+        ELSE 'OTHER'
+    END AS MARKET
+
+FROM APAC_ALL_PLATFORM.PUBLIC."Salesforce_CS_APAC_ALL"
+WHERE CAMPAIGN_ID IN (
+    '701RG00001DtQczYAF',
+    '701RG00001HcDIVYA3',
+    '701RG00001GvvrDYAR'
+);
+
+
+-- ---- Overall CS leads model (status counts by market) -----------------------
+CREATE OR REPLACE VIEW V_MONGODB_CS_LEADS AS
+SELECT
+    MARKET,
+    COUNT(*)                                                       AS TOTAL_LEADS,
+    SUM(CASE WHEN LEAD_STATUS = 'Accepted'        THEN 1 ELSE 0 END) AS ACCEPTED,
+    SUM(CASE WHEN LEAD_STATUS = 'Rejected'        THEN 1 ELSE 0 END) AS REJECTED,
+    SUM(CASE WHEN LEAD_STATUS = 'New'             THEN 1 ELSE 0 END) AS NEW_PENDING,
+    SUM(CASE WHEN LEAD_STATUS = 'Unresponsive'    THEN 1 ELSE 0 END) AS UNRESPONSIVE,
+    SUM(CASE WHEN LEAD_STATUS = 'Do Not Contact'  THEN 1 ELSE 0 END) AS DO_NOT_CONTACT,
+    MAX(DAY)                                                          AS LAST_LEAD_DAY
+FROM V_STG_SALESFORCE_MONGODB
+GROUP BY MARKET;
+
+
+-- ---- Per-programme breakdown ------------------------------------------------
+CREATE OR REPLACE VIEW V_MONGODB_CS_LEADS_BY_PROGRAMME AS
+SELECT
+    PROGRAMME_LABEL,
+    MARKET,
+    COUNT(*)                                                       AS TOTAL_LEADS,
+    SUM(CASE WHEN LEAD_STATUS = 'Accepted'        THEN 1 ELSE 0 END) AS ACCEPTED,
+    SUM(CASE WHEN LEAD_STATUS = 'New'             THEN 1 ELSE 0 END) AS NEW_PENDING,
+    SUM(CASE WHEN LEAD_STATUS = 'Unresponsive'    THEN 1 ELSE 0 END) AS UNRESPONSIVE,
+    SUM(CASE WHEN LEAD_STATUS = 'Do Not Contact'  THEN 1 ELSE 0 END) AS DO_NOT_CONTACT,
+    MAX(DAY)                                                          AS LAST_LEAD_DAY
+FROM V_STG_SALESFORCE_MONGODB
+GROUP BY PROGRAMME_LABEL, MARKET;
+
+
+-- =============================================================================
+-- SECTION 5  -  UNIFIED PAID MEDIA MODEL
+-- =============================================================================
+-- Same shape as Cloudflare's V_PAID_ADS_FINAL_MODEL. Leads = 0 here because
+-- TTD pixel doesn't deliver lead-level data; CS lead counts come from
+-- V_MONGODB_CS_LEADS instead.
+-- =============================================================================
+CREATE OR REPLACE VIEW V_MONGODB_FINAL_MODEL AS
+SELECT
+    'TradeDesk'                          AS CHANNEL,
+    DAY                                  AS DATE,
+    TRUNC(DAY, 'WEEK')                   AS WEEK_START,
+    PROGRAMME,
+    MARKET,
+    STRATEGY,
+    OBJECTIVE,
+    CAMPAIGN_NAME,
+    AD_GROUP_NAME,
+    PUBLISHER,
+    CREATIVE_FORMAT,
+    SUM(IMPRESSIONS)                     AS IMPS,
+    SUM(CLICKS)                          AS CLICKS,
+    SUM(COSTS)                           AS SPEND_USD,
+    SUM(CONVERSIONS)                     AS CONVERSIONS,
+    0                                    AS LEADS
+FROM V_STG_TRADEDESK_MONGODB
+GROUP BY ALL;
+
+
+-- =============================================================================
+-- SECTION 6  -  R2 STAGE (reuses Cloudflare's bucket)
+-- =============================================================================
+-- Cloudflare's existing stage:
+--   CLOUDFLARE_SANDBOX.CS_REPORTING.R2_DASHBOARD_STAGE
+--   url=s3compat://cf-apac-dashboard
+--   endpoint=3fce879c2c2cdf182692f5befb2cc224.r2.cloudflarestorage.com
+--
+-- We reuse the bucket. To copy the exact credentials (preferred) run as
+-- ACCOUNTADMIN first:
+--   SELECT GET_DDL('STAGE','CLOUDFLARE_SANDBOX.CS_REPORTING.R2_DASHBOARD_STAGE');
+-- Then paste the full CREDENTIALS=(...) block into the stage below.
+--
+-- ALTERNATIVE: skip creating a new stage and just write to Cloudflare's
+-- stage directly from this task (simpler - one less object to maintain).
+-- The COPY INTO line in section 7 would then read:
+--   COPY INTO @CLOUDFLARE_SANDBOX.CS_REPORTING.R2_DASHBOARD_STAGE/mongodb.json
+-- =============================================================================
+CREATE OR REPLACE STAGE R2_DASHBOARD_STAGE
+    URL = 's3compat://cf-apac-dashboard'
+    ENDPOINT = '3fce879c2c2cdf182692f5befb2cc224.r2.cloudflarestorage.com'
+    CREDENTIALS = (
+        AWS_KEY_ID = '3a1a177e12dfefe7eaa90bd6cb0d46b9'
+        AWS_SECRET_KEY = '9ac35ec0ea42ac6c692dc16803746877e248766a3a40d6883497595ea1443078'
+    )
+    FILE_FORMAT = (TYPE = JSON, COMPRESSION = NONE)
+    COMMENT = 'Writes mongodb.json into the shared cf-apac-dashboard R2 bucket.';
+
+
+-- =============================================================================
+-- SECTION 7  -  DAILY EXPORT TASK
+-- =============================================================================
+-- Writes mongodb.json to R2 at 22:00 UTC. JSON envelope includes:
+--   - last_updated, row_count, window
+--   - all_markets, all_programmes
+--   - rows[]              (live TradeDesk delivery)
+--   - targets[]           (xlsx snapshot)
+--   - benchmarks_strategy, benchmarks_market
+--   - budget[]            (programme envelopes)
+--   - cs[]                (Salesforce live leads, overall)
+--   - cs_by_programme[]   (Salesforce live leads, per-programme breakdown)
+-- =============================================================================
+CREATE OR REPLACE TASK DAILY_MONGODB_EXPORT
+  WAREHOUSE = APAC_IN_WH
+  SCHEDULE  = 'USING CRON 0 22 * * * UTC'
+  COMMENT   = 'Builds mongodb.json from TTD + Salesforce + xlsx targets.'
+AS
+COPY INTO @R2_DASHBOARD_STAGE/mongodb.json
+FROM (
+    WITH
+    window_meta AS (
+        SELECT
+            MIN(DATE)::STRING AS start_date,
+            MAX(DATE)::STRING AS end_date,
+            DATEDIFF('day', MIN(DATE), MAX(DATE)) + 1 AS days
+        FROM V_MONGODB_FINAL_MODEL
+    ),
+
+    rows_array AS (
+        SELECT ARRAY_AGG(OBJECT_CONSTRUCT(
+            'channel',       channel,
+            'date',          date::STRING,
+            'week_start',    week_start::STRING,
+            'programme',     programme,
+            'market',        market,
+            'strategy',      strategy,
+            'objective',     objective,
+            'imps',          imps,
+            'clicks',        clicks,
+            'spend_usd',     spend_usd,
+            'conversions',   conversions,
+            'leads',         leads
+        )) AS rows_json,
+        COUNT(*) AS row_count
+        FROM V_MONGODB_FINAL_MODEL
+    ),
+
+    targets_array AS (
+        SELECT ARRAY_AGG(OBJECT_CONSTRUCT(
+            'programme',     programme_label,
+            'market',        market,
+            'target',        target_leads,
+            'delivered',     delivered_leads_snapshot
+        )) AS targets_json
+        FROM V_MONGODB_TARGETS
+    ),
+
+    bench_strategy AS (
+        SELECT OBJECT_AGG(STRATEGY, OBJECT_CONSTRUCT(
+            'cpm', CPM, 'ctr', CTR, 'frequency', FREQUENCY_CAP, 'weight', BUDGET_WEIGHT
+        )) AS benchmarks_strategy_json
+        FROM V_MONGODB_BENCHMARKS_STRATEGY
+    ),
+
+    bench_market AS (
+        SELECT OBJECT_AGG(MARKET, OBJECT_CONSTRUCT(
+            'budget_weight', BUDGET_WEIGHT
+        )) AS benchmarks_market_json
+        FROM V_MONGODB_BENCHMARKS_MARKET
+    ),
+
+    budget_envelope AS (
+        SELECT ARRAY_AGG(OBJECT_CONSTRUCT(
+            'programme',      programme_label,
+            'tradedesk_code', tradedesk_code,
+            'gross_usd',      gross_budget_usd,
+            'net_usd',        net_budget_usd,
+            'start',          start_date,
+            'end',            end_date
+        )) AS budget_json
+        FROM V_MONGODB_BUDGET_PROGRAMME
+    ),
+
+    cs_overall AS (
+        SELECT ARRAY_AGG(OBJECT_CONSTRUCT(
+            'market',          market,
+            'total',           total_leads,
+            'accepted',        accepted,
+            'rejected',        rejected,
+            'new_pending',     new_pending,
+            'unresponsive',    unresponsive,
+            'do_not_contact',  do_not_contact,
+            'last_lead_day',   last_lead_day::STRING
+        )) AS cs_json
+        FROM V_MONGODB_CS_LEADS
+    ),
+
+    cs_by_prog AS (
+        SELECT ARRAY_AGG(OBJECT_CONSTRUCT(
+            'programme',       programme_label,
+            'market',          market,
+            'total',           total_leads,
+            'accepted',        accepted,
+            'new_pending',     new_pending,
+            'unresponsive',    unresponsive,
+            'do_not_contact',  do_not_contact,
+            'last_lead_day',   last_lead_day::STRING
+        )) AS cs_by_prog_json
+        FROM V_MONGODB_CS_LEADS_BY_PROGRAMME
+    )
+
+    SELECT OBJECT_CONSTRUCT(
+        'last_updated',         CURRENT_TIMESTAMP()::STRING,
+        'row_count',            r.row_count,
+        'window',               OBJECT_CONSTRUCT(
+                                    'start', w.start_date,
+                                    'end',   w.end_date,
+                                    'days',  w.days
+                                ),
+        'all_markets',          ARRAY_CONSTRUCT('ANZ','ASEAN','INDIA','KR-HK-TW'),
+        'all_programmes',       ARRAY_CONSTRUCT('IDE','IDC'),
+        'rows',                 r.rows_json,
+        'targets',              t.targets_json,
+        'benchmarks_strategy',  bs.benchmarks_strategy_json,
+        'benchmarks_market',    bm.benchmarks_market_json,
+        'budget',               be.budget_json,
+        'cs',                   co.cs_json,
+        'cs_by_programme',      cp.cs_by_prog_json
+    )
+    FROM window_meta w,
+         rows_array r,
+         targets_array t,
+         bench_strategy bs,
+         bench_market bm,
+         budget_envelope be,
+         cs_overall co,
+         cs_by_prog cp
+)
+FILE_FORMAT = (TYPE = JSON, COMPRESSION = NONE)
+OVERWRITE = TRUE
+SINGLE = TRUE
+HEADER = FALSE;
+
+ALTER TASK DAILY_MONGODB_EXPORT RESUME;
+
+
+-- =============================================================================
+-- SECTION 8  -  VERIFY
+-- =============================================================================
+-- 8a. TradeDesk staging freshness
+SELECT 'TTD STAGING' AS check_name,
+       COUNT(*) AS rows_n,
+       MIN(DAY) AS earliest_day,
+       MAX(DAY) AS latest_day
+FROM V_STG_TRADEDESK_MONGODB;
+
+-- 8b. TTD parse - 8 cells (2 programmes x 4 markets), no nulls
+SELECT 'TTD PARSE' AS check_name,
+       PROGRAMME, MARKET,
+       COUNT(DISTINCT STRATEGY) AS strategies,
+       SUM(IMPRESSIONS) AS imps,
+       SUM(CLICKS) AS clicks,
+       ROUND(SUM(COSTS), 2) AS spend
+FROM V_STG_TRADEDESK_MONGODB
+GROUP BY PROGRAMME, MARKET
+ORDER BY PROGRAMME, MARKET;
+
+-- 8c. Targets readback
+SELECT 'TARGETS' AS check_name, * FROM V_MONGODB_TARGETS_BY_PROGRAMME ORDER BY PROGRAMME_LABEL;
+
+-- 8d. CS leads overall - should total 354 (261 + 75 + 18)
+SELECT 'CS LEADS OVERALL' AS check_name, * FROM V_MONGODB_CS_LEADS ORDER BY MARKET;
+
+-- 8e. CS leads by programme
+SELECT 'CS LEADS BY PROGRAMME' AS check_name, * FROM V_MONGODB_CS_LEADS_BY_PROGRAMME
+ORDER BY PROGRAMME_LABEL, MARKET;
+
+-- 8f. Task health
+SHOW TASKS LIKE 'DAILY_MONGODB_EXPORT' IN SCHEMA MONGODB_SANDBOX.PAID_MEDIA_REPORTING;
+
+-- 8g. Manually fire the task once so mongodb.json exists on R2 immediately
+EXECUTE TASK DAILY_MONGODB_EXPORT;
